@@ -1,0 +1,273 @@
+{% extends 'base/base.html' %}
+
+<meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-eval' 'unsafe-inline';" />
+
+{% block content %}
+  <div class="layout-container">
+    <div class="main-container">
+      <h2>螢幕分享</h2>
+      <button class="action-button start">開始螢幕分享</button>
+      <button class="action-button stop">停止螢幕分享</button>
+      <video id="screen-share-video" autoplay style="width: 100%; height: auto; border: 1px solid #ccc; margin-top: 10px;"></video>
+    </div>
+    <div class="chat-container">
+      <h2>學生問AI的問題</h2>
+      <div class="chat-records-container" id="chat-records-container">
+        <textarea id="chat-textbox" readonly style="width: 100%; height: 90%; resize: none; border: 1px solid #ccc; padding: 10px;"></textarea>
+      </div>
+      <button onclick="window.location.href='/teacher_dashboard/analyze_questions_page/'" class="action-button">問題分析</button>
+      <div class="time-filter-container">
+        <div class="time-filter-item">
+          <label for="start-time">開始時間:</label>
+          <input type="datetime-local" id="start-time" style="width: 150px;" />
+        </div>
+        <div class="time-filter-item">
+          <label for="end-time">結束時間:</label>
+          <input type="datetime-local" id="end-time" style="width: 150px;" />
+        </div>
+        <button class="action-button" onclick="filterChatRecords()">篩選</button>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    .layout-container {
+      display: flex;
+      height: calc(100vh - 50px); /* 留出上方導航欄的空間 */
+      gap: 10px;
+    }
+    .main-container {
+      flex: 7;
+      border: 1px solid #ccc;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+    .chat-container {
+      flex: 3;
+      border-left: 1px solid #ccc;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+    }
+    .chat-records-container {
+      overflow-y: auto;
+      height: 70%;
+      padding: 10px;
+    }
+    .time-filter-container {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      margin: 10px 0;
+    }
+    .time-filter-item {
+      margin-bottom: 5px;
+    }
+    .action-button {
+      padding: 10px 20px;
+      font-size: 16px;
+      border: none;
+      background-color: #f44336;
+      color: white;
+      cursor: pointer;
+      transition: background-color 0.3s;
+      margin-top: 10px;
+    }
+    .action-button:hover {
+      background-color: #d32f2f;
+    }
+  </style>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      initializeWebSocket()
+    
+      document.querySelector('.action-button.start').addEventListener('click', startScreenShare)
+      document.querySelector('.action-button.stop').addEventListener('click', stopScreenShare)
+    })
+    
+    let screenShareSocket
+    
+    async function startScreenShare() {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          throw new Error('Your browser does not support screen sharing. Make sure you are using an up-to-date browser version and the connection is secure.')
+        }
+    
+        // 建立 WebSocket 連接
+        if (!screenShareSocket || screenShareSocket.readyState !== WebSocket.OPEN) {
+          screenShareSocket = new WebSocket('wss://' + window.location.host + '/ws/screen_share/')
+    
+          screenShareSocket.onopen = function () {
+            console.log('WebSocket connection established for screen sharing')
+    
+            // 在 WebSocket 連接成功後發送開始螢幕分享的通知
+            sendStartScreenShareNotification()
+          }
+    
+          screenShareSocket.onclose = function (event) {
+            console.warn('Screen share connection closed:', event)
+          }
+    
+          screenShareSocket.onerror = function (error) {
+            console.error('WebSocket encountered an error:', error)
+          }
+        } else {
+          // 如果 WebSocket 已經連接，直接發送開始分享的消息
+          sendStartScreenShareNotification()
+        }
+    
+        // 開始螢幕分享
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always'
+          },
+          audio: false
+        })
+    
+        document.getElementById('screen-share-video').srcObject = stream
+    
+        // 當螢幕分享停止時，處理相應的事件
+        stream.getVideoTracks()[0].addEventListener('ended', () => {
+          document.getElementById('screen-share-video').srcObject = null
+          stopScreenShare()
+        })
+    
+        // 通知後端開始分享螢幕
+        await fetch('/teacher_dashboard/start_screen_share/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+          }
+        })
+      } catch (err) {
+        console.error('Error sharing screen:', err)
+        alert(err.message)
+      }
+    }
+    
+    // 新增的函數，確保開始分享通知在 WebSocket 完全連接後發送
+    function sendStartScreenShareNotification() {
+      if (screenShareSocket && screenShareSocket.readyState === WebSocket.OPEN) {
+        screenShareSocket.send(
+          JSON.stringify({
+            type: 'start_screen_share',
+            message: 'Screen sharing started by teacher.'
+          })
+        )
+        console.log('Sent start screen share notification via WebSocket')
+      } else {
+        console.error('WebSocket is not open. Failed to send start screen share notification.')
+      }
+    }
+    
+    async function stopScreenShare() {
+      try {
+        const response = await fetch('/teacher_dashboard/stop_screen_share/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+          }
+        })
+    
+        if (!response.ok) {
+          throw new Error(`Failed to stop screen share: ${response.statusText}`)
+        }
+    
+        document.querySelector('.action-button.start').disabled = false
+        document.querySelector('.action-button.stop').disabled = true
+    
+        console.log('Screen share stopped successfully')
+      } catch (err) {
+        console.error('Error stopping screen share:', err)
+        alert('停止螢幕分享失敗，請檢查您的網絡連接並重試。')
+      }
+    }
+    
+    function fetchChatRecords() {
+      fetch('/teacher_dashboard/fetch_chat_records/')
+        .then((response) => response.json())
+        .then((data) => {
+          const chatTextbox = document.getElementById('chat-textbox')
+          chatTextbox.value = ''
+          data.chat_records.forEach((record) => {
+            chatTextbox.value += `${record.student_id}: ${record.question} (${record.question_time})\n`
+          })
+        })
+        .catch((error) => console.error('Error fetching chat records:', error))
+    }
+    
+    setInterval(fetchChatRecords, 30000)
+    
+    function filterChatRecords() {
+      const startTime = document.getElementById('start-time').value
+      const endTime = document.getElementById('end-time').value
+    
+      if (startTime && endTime) {
+        fetch(`/teacher_dashboard/dashboard/?start_time=${startTime}&end_time=${endTime}`, {
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            const chatTextbox = document.getElementById('chat-textbox')
+            chatTextbox.value = ''
+            data.chat_records.forEach((record) => {
+              chatTextbox.value += `${record.student_id}: ${record.question} (${record.question_time})\n`
+            })
+          })
+          .catch((error) => console.error('Error fetching filtered chat records:', error))
+      } else {
+        alert('請選擇開始和結束時間')
+      }
+    }
+    
+    function getCookie(name) {
+      let cookieValue = null
+      if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';')
+        for (let i = 0; i < cookies.length; i++) {
+          const cookie = cookies[i].trim()
+          if (cookie.substring(0, name.length + 1) === name + '=') {
+            cookieValue = decodeURIComponent(cookie.substring(name.length + 1))
+            break
+          }
+        }
+      }
+      return cookieValue
+    }
+    
+    function initializeWebSocket() {
+      try {
+        const socket = new WebSocket('wss://' + window.location.host + '/ws/screen_share/')
+    
+        socket.onmessage = function (event) {
+          const data = JSON.parse(event.data)
+          const screenShareVideo = document.getElementById('screen-share-video')
+          if (screenShareVideo) {
+            screenShareVideo.srcObject = data.stream // 更新分享內容
+          } else {
+            console.error('Screen share video element not found')
+          }
+        }
+    
+        socket.onclose = function (event) {
+          console.log('WebSocket is closed now.')
+        }
+    
+        socket.onerror = function (error) {
+          console.error('WebSocket Error:', error)
+        }
+      } catch (e) {
+        console.error('Error initializing WebSocket: ', e)
+      }
+    }
+  </script>
+{% endblock %}
